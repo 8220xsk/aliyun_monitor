@@ -277,15 +277,26 @@ def dispatch_alert(wework_conf, gotify_conf, bark_conf, title, message, color_st
     # 只要任意一个渠道发送成功，就记为发送成功并进入冷却
     return res_wework or res_gotify or res_bark
 
+def billing_region_for_domain(bill_endpoint):
+    """根据 BSS 账单域名推导对应 RegionId。
+    国内站 business.aliyuncs.com → cn-hangzhou；
+    国际站 business.ap-southeast-1.aliyuncs.com → ap-southeast-1。
+    region 与域名站点不一致时 BSS 会报 400 "caller site matches the API domain regionId"。"""
+    parts = (bill_endpoint or '').split('.')
+    if len(parts) >= 4 and parts[0] == 'business':
+        return parts[1]
+    return 'cn-hangzhou'
+
 def get_balance_line(user):
     """查询账户可用余额，返回告警消息中的"当前余额"行；失败返回空字符串，不影响告警发送"""
     endpoints = [user.get('bill_endpoint', 'business.ap-southeast-1.aliyuncs.com')]
     for candidate in ('business.aliyuncs.com', 'business.ap-southeast-1.aliyuncs.com'):
         if candidate not in endpoints:
             endpoints.append(candidate)
-    client = AcsClient(user['ak'], user['sk'], user['region'])
     for endpoint in endpoints:
         try:
+            # 使用与账单域名站点匹配的 client，避免国际账号 "caller site" 400 导致余额查询失败
+            client = AcsClient(user['ak'], user['sk'], billing_region_for_domain(endpoint))
             req = CommonRequest()
             req.set_domain(endpoint)
             req.set_version('2017-12-14')
