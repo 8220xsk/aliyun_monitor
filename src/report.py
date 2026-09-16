@@ -7,6 +7,7 @@ import datetime
 import requests
 import logging
 from logging.handlers import TimedRotatingFileHandler
+from urllib.parse import quote
 
 # 修正 urllib3 在 Python 3.12 下引发的 SNI 丢失问题
 try:
@@ -32,8 +33,8 @@ try:
 except ImportError:
     sys.exit(1)
 
-CONFIG_FILE = '/opt/scripts/config.json'
-LOG_FILE = '/opt/scripts/report.log'
+CONFIG_FILE = '/opt/scripts/aliyun_monitor/config.json'
+LOG_FILE = '/opt/scripts/aliyun_monitor/log/report/report.log'
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -59,15 +60,11 @@ def sanitize_markdown(text):
         text = text.replace(ch, ' ')
     return text.strip()
 
-# Telegram 单条消息上限 4096 字符，留出余量按行分片
-TG_MESSAGE_LIMIT = 4000
-
-def split_message(message, limit=TG_MESSAGE_LIMIT):
-    """按行边界将超长消息切分为多段，保证每段不超过 Telegram 上限"""
+def split_message(message, limit=4000):
+    """按行边界将超长消息切分为多段，保证每段不超过消息上限"""
     chunks = []
     current = ""
     for line in message.split("\n"):
-        # 单行本身也可能超过限制（例如异常堆栈或超长实例名），需要硬切分。
         while len(line) > limit:
             if current:
                 chunks.append(current)
@@ -84,30 +81,104 @@ def split_message(message, limit=TG_MESSAGE_LIMIT):
         chunks.append(current)
     return chunks
 
-def send_tg_report(tg_conf, message):
-    if not tg_conf.get('bot_token') or not tg_conf.get('chat_id'):
-        logger.warning("Telegram 配置不完整，跳过日报发送")
+# 企业微信 Webhook 推送功能（纯文本格式，支持微信插件展示）
+def send_wework_report(wework_conf, message):
+    webhook_url = wework_conf.get('webhook_url', '').strip()
+    if not webhook_url:
+        logger.warning("企业微信 Webhook URL 未配置，跳过日报发送")
+        return False
+
+    try:
+        clean_text = message.replace('*', '').replace('`', '')
+        # 单独为企业微信拼接首行标题
+        full_text = f"📊 [阿里云多账号 - 每日财报]\n{clean_text}"
+        data = {
+            "msgtype": "text",
+            "text": {
+                "content": full_text
+            }
+        }
+        response = requests.post(webhook_url, json=data, timeout=10)
+        result = response.json()
+
+        if result.get('errcode') == 0:
+            logger.info("企业微信日报发送成功")
+            return True
+        else:
+            logger.error("企业微信日报发送失败: %s", result.get('errmsg', '未知错误'))
+            return False
+    except Exception as e:
+        logger.error("企业微信日报发送异常: %s", e)
+        return False
+
+# Gotify 推送功能
+def send_gotify_report(gotify_conf, message):
+    server_url = (gotify_conf.get('url') or '').strip().rstrip('/')
+    token = (gotify_conf.get('token') or '').strip()
+
+    if not server_url or not token:
+        logger.warning("Gotify 配置不完整，跳过推送")
+        return False
+
+    url = f"{server_url}/message?token={token}"
+    clean_text = message.replace('*', '').replace('`', '')
+
+    payload = {
+        "title": "📊 阿里云多账号 - 每日财报",
+        "message": clean_text,
+        "priority": 5,
+        "extras": {
+            "client::display": {
+                "contentType": "text/plain"
+            }
+        }
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            logger.info("Gotify 日报发送成功")
+            return True
+        else:
+            logger.error("Gotify 日报发送失败: HTTP %s, %s", response.status_code, response.text)
+            return False
+    except Exception as e:
+        logger.error("Gotify 日报发送异常: %s", e)
+        return False
+
+# Bark 推送功能
+def send_bark_report(bark_conf, message):
+    raw_url = (bark_conf.get('bark_url') or '').strip().rstrip('/')
+    if not raw_url:
         return
-    url = f"https://api.telegram.org/bot{tg_conf['bot_token']}/sendMessage"
-    chunks = split_message(message)
-    for index, chunk in enumerate(chunks, 1):
-        payloads = [
-            {"chat_id": tg_conf['chat_id'], "text": chunk, "parse_mode": "Markdown"},
-            # Markdown 解析失败或网络抖动时，退化为纯文本再试一次，保证日报必达
-            {"chat_id": tg_conf['chat_id'], "text": chunk},
-        ]
-        sent = False
-        for data in payloads:
-            try:
-                response = requests.post(url, json=data, timeout=10)
-                if response.status_code == 200:
-                    sent = True
-                    break
-                logger.error("Telegram 日报发送失败: HTTP %s, %s", response.status_code, response.text)
-            except Exception as e:
-                logger.exception("Telegram 日报发送异常: %s", e)
-        if sent:
-            logger.info("Telegram 日报发送成功 (%s/%s)", index, len(chunks))
+
+    if raw_url.startswith('http://') or raw_url.startswith('https://'):
+        parts = raw_url.split('/')
+        device_key = parts[-1]
+        base_server = "/".join(parts[:-1])
+    else:
+        device_key = raw_url
+        base_server = "https://api.day.app"
+
+    url = f"{base_server}/push"
+
+    payload = {
+        "device_key": device_key,
+        "title": "📊 阿里云多账号每日财报",
+        "body": message,
+        "group": "阿里云监控",
+        "icon": "https://img.alicdn.com/tfs/TB1_uJ4uL1YBuNjSszeXXablFXa-144-144.png"
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        res_data = response.json() if response.status_code == 200 else {}
+        if response.status_code == 200 and res_data.get('code') == 200:
+            logger.info("Bark 日报发送成功")
+        else:
+            logger.error("Bark 日报发送失败: HTTP %s, %s", response.status_code, response.text)
+    except Exception as e:
+        logger.error("Bark 日报发送异常: %s", e)
 
 def do_common_request(client, domain, version, action, params=None, method='POST', timeout=30, retries=3):
     for attempt in range(1, retries + 1):
@@ -118,8 +189,11 @@ def do_common_request(client, domain, version, action, params=None, method='POST
             request.set_action_name(action)
             request.set_method(method)
             request.set_protocol_type('https')
-            request.set_connect_timeout(5000)   # 连接 5 秒内必须成功，避免黑洞 IP 卡死
-            request.set_read_timeout(15000)      # 读取 15 秒
+            # 注意: aliyunsdkcore 将 connect/read timeout 解释为秒（与 monitor.py 保持一致）
+            request.set_connect_timeout(5)
+            request.set_read_timeout(15)
+            # 说明: CommonRequest 没有 set_region_id；RegionId 由 AcsClient 的区域自动注入，
+            # 因此账单类调用请使用 region 与账单域名站点匹配的 client（见 billing_region_for_domain）。
             if params:
                 for k, v in params.items():
                     request.add_query_param(k, v)
@@ -139,11 +213,39 @@ BALANCE_ENDPOINTS = ('business.aliyuncs.com', 'business.ap-southeast-1.aliyuncs.
 def currency_symbol(code, default='$'):
     return {'CNY': '¥', 'USD': '$'}.get(code, default)
 
-def get_account_balance(client, bill_endpoint):
-    """查询账户可用余额 (QueryAccountBalance)。返回 (金额, 货币代码)；查询失败返回 (None, None)。"""
-    # 优先使用该账号配置的账单节点，失败后尝试另一节点，兼容国内/国际站配置错误的情况
+def billing_region_for_domain(bill_endpoint):
+    """根据 BSS 账单域名推导对应 RegionId。
+    国内站 business.aliyuncs.com → cn-hangzhou；
+    国际站 business.ap-southeast-1.aliyuncs.com → ap-southeast-1。
+    region 与域名站点不一致时 BSS 会报 400 "caller site matches the API domain regionId"。"""
+    parts = (bill_endpoint or '').split('.')
+    if len(parts) >= 4 and parts[0] == 'business':
+        return parts[1]
+    return 'cn-hangzhou'
+
+def get_instance_bill(ak, sk, bill_endpoint, instance_id):
+    """按实例查询当月账单 (DescribeInstanceBill)，返回 (金额, 货币代码)；查不到返回 (None, None)。
+    使用与账单域名站点匹配的 client，避免 BSS 报 "caller site matches the API domain regionId"。
+    注意: 旧代码硬编码 business.aliyuncs.com（国内站），国际账号会站点不匹配而失败。"""
+    client = AcsClient(ak, sk, billing_region_for_domain(bill_endpoint))
+    params = {
+        'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
+        'InstanceID': instance_id,
+        'Granularity': 'MONTHLY',
+    }
+    data = do_common_request(client, bill_endpoint, '2017-12-14', 'DescribeInstanceBill', params, retries=1)
+    if data and data.get('Success'):
+        items = data.get('Data', {}).get('Items', [])
+        if items:
+            amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
+            currency = items[0].get('Currency', 'USD')
+            return amount, currency
+    return None, None
+
+def get_account_balance(ak, sk, bill_endpoint):
     endpoints = [bill_endpoint] + [ep for ep in BALANCE_ENDPOINTS if ep != bill_endpoint]
     for endpoint in endpoints:
+        client = AcsClient(ak, sk, billing_region_for_domain(endpoint))
         data = do_common_request(client, endpoint, '2017-12-14', 'QueryAccountBalance', retries=1)
         if not data or not data.get('Success'):
             continue
@@ -152,7 +254,6 @@ def get_account_balance(client, bill_endpoint):
         if raw_amount is None:
             continue
         try:
-            # 金额可能带千分位逗号，如 "1,234.56"
             amount = float(str(raw_amount).replace(',', ''))
         except ValueError:
             continue
@@ -167,12 +268,14 @@ def main():
         sys.exit(1)
 
     users = config.get('users', [])
-    tg_conf = config.get('telegram', {})
-    
+    bark_conf = config.get('bark', {})
+    wework_conf = config.get('wework', {})
+    gotify_conf = config.get('gotify', {})  # 读取 Gotify 配置
+
     report_lines = []
-    balance_cache = {}  # 同一账号(AK)的余额只查询一次
+    balance_cache = {}
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    report_lines.append(f"📊 *[阿里云多账号 - 每日财报]*")
+#    report_lines.append(f"📊 *[阿里云多账号 - 每日财报]*")
     report_lines.append(f"📅 日期: {today}\n")
 
     for user in users:
@@ -190,7 +293,6 @@ def main():
                 )
                 continue
 
-            # [名字显示修复] 优先使用备注，没有则用ID，再没有则用Unknown
             user_name = user.get('name', '').strip()
             if not user_name:
                 user_name = target_id if target_id else "Unknown_Device"
@@ -199,42 +301,33 @@ def main():
             
             # 1. CDT 流量
             traffic_data = do_common_request(AcsClient(user['ak'].strip(), user['sk'].strip(), 'cn-hangzhou'), 'cdt.aliyuncs.com', '2021-08-13', 'ListCdtInternetTraffic')
-            traffic_gb = -1  # -1 表示查询失败
+            traffic_gb = -1
             if traffic_data:
                 traffic_gb = sum(d.get('Traffic', 0) for d in traffic_data.get('TrafficDetails', [])) / (1024**3)
 
-            # 2. BSS 账单 (兼容国际站/国内站: 优先 DescribeInstanceBill，失败回退 QueryBillOverview)
+            # 2. BSS 账单 (优先按实例 DescribeInstanceBill，失败回退整账号 QueryBillOverview)
             bill_amount = -1
             bill_currency = 'USD'
-
-            # 尝试1: DescribeInstanceBill (精确到实例)
-            bill_params = {
-                'BillingCycle': datetime.datetime.now().strftime("%Y-%m"),
-                'InstanceID': target_id
-            }
-            bill_data = do_common_request(client, 'business.aliyuncs.com', '2017-12-14', 'DescribeInstanceBill', bill_params, retries=1)
-            if bill_data and bill_data.get('Success'):
-                items = bill_data.get('Data', {}).get('Items', [])
-                bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items)
-                if items:
-                    bill_currency = items[0].get('Currency', 'USD')
-
-            # 尝试2: 回退到 QueryBillOverview (国际站兼容)
-            if bill_amount == -1:
+            inst_bill = get_instance_bill(user['ak'].strip(), user['sk'].strip(), bill_endpoint, target_id)
+            if inst_bill[0] is not None:
+                bill_amount, bill_currency = inst_bill
+            else:
+                bill_region = billing_region_for_domain(bill_endpoint)
+                billing_client = AcsClient(user['ak'].strip(), user['sk'].strip(), bill_region)
                 bill_params2 = {'BillingCycle': datetime.datetime.now().strftime("%Y-%m")}
-                bill_data2 = do_common_request(client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
+                bill_data2 = do_common_request(billing_client, bill_endpoint, '2017-12-14', 'QueryBillOverview', bill_params2)
                 if bill_data2:
                     items2 = bill_data2.get('Data', {}).get('Items', {}).get('Item', [])
                     bill_amount = sum(float(item.get('PretaxAmount', 0)) for item in items2)
                     if items2:
                         bill_currency = items2[0].get('Currency', 'USD')
 
-            # 2.5 账户可用余额 (同账号多实例复用缓存，避免重复请求)
+            # 2.5 账户可用余额
             ak_key = user['ak'].strip()
             if ak_key in balance_cache:
                 balance_amount, balance_currency = balance_cache[ak_key]
             else:
-                balance_amount, balance_currency = get_account_balance(client, bill_endpoint)
+                balance_amount, balance_currency = get_account_balance(user['ak'].strip(), user['sk'].strip(), bill_endpoint)
                 balance_cache[ak_key] = (balance_amount, balance_currency)
 
             # 3. ECS 状态
@@ -249,12 +342,10 @@ def main():
                 for inst in ecs_data['Instances'].get('Instance', []):
                     if inst['InstanceId'] == target_id:
                         status = inst.get('Status', 'Unknown')
-                        # IP
                         pub = inst.get('PublicIpAddress', {}).get('IpAddress', [])
                         eip = inst.get('EipAddress', {}).get('IpAddress', "")
                         ip = eip if eip else (pub[0] if pub else "无公网IP")
                         
-                        # Spec (0.5G 内存修复)
                         cpu = inst.get('Cpu', 0)
                         mem_mb = inst.get('Memory', 0)
                         if mem_mb > 0 and mem_mb % 1024 == 0:
@@ -279,10 +370,8 @@ def main():
             bill_str = f"${bill_amount:.2f}" if bill_amount != -1 else "Fail"
             if bill_amount != -1 and bill_currency == 'CNY':
                 bill_str = f"¥{bill_amount:.2f}"
-                # USD 阈值换算为 CNY，汇率可通过配置项 usd_cny_rate 覆盖（默认 7.0）
                 bill_limit = bill_limit * float(user.get('usd_cny_rate', 7.0))
             elif bill_amount != -1:
-                # 覆盖货币符号（支持根据配置动态显示）
                 bill_str = f"{user.get('currency', '$')}{bill_amount:.2f}"
 
             if balance_amount is not None:
@@ -319,7 +408,11 @@ def main():
             report_lines.append(f"❌ *{sanitize_markdown(user.get('name', 'Unknown'))}* Error: {sanitize_markdown(e)}\n")
 
     final_msg = "\n".join(report_lines)
-    send_tg_report(tg_conf, final_msg)
+    
+    # 依次触发三端发送
+    send_bark_report(bark_conf, final_msg)
+    send_wework_report(wework_conf, final_msg)
+    send_gotify_report(gotify_conf, final_msg)  # 触发 Gotify 发送
 
 if __name__ == "__main__":
     main()

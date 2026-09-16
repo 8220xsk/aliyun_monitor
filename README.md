@@ -1,186 +1,182 @@
-# 阿里云 CDT 流量监控 & 自动止损脚本 (支持国内/国际双版本)
+# 阿里云 CDT 流量监控 & 自动止损 & 日报 (国内/国际双站支持)
 
 ![OS](https://img.shields.io/badge/OS-Linux-blue?logo=linux)
 ![Python](https://img.shields.io/badge/Python-3.x-yellow?logo=python)
 ![Alibaba Cloud](https://img.shields.io/badge/Alibaba%20Cloud-Domestic%20%26%20International-orange?logo=alibabacloud)
 
-一个不仅为自定义 **Alpine** 系统准备的，更全面支持 **阿里云国内版（人民币结算）** 与 **阿里云国际版（美元结算）** 的 **CDT 公网流量监控 + 自动止损工具**。  
-在流量或账单即将失控前 **强制关机**，全面适配多节点区域及 Python 3.12 兼容性问题，真正帮你守住钱包 💰。
+一个基于 **阿里云 CDT（云数据传输）** 的 **公网流量监控 + 自动止损 + 每日财报** 工具。  
+流量或账单临近失控时自动 **强制关机止损**，次月流量重置后自动开机恢复，全面适配 **国内版（人民币 ¥ 结算）** 与 **国际版（美元 $ 结算）**，同时支持多账号、多地域混合监控。帮你守住钱包 💰。
 
----
-
-## 📺 视频教程
-
-<div align="center">
-  <a href="https://www.bilibili.com/video/BV1b2rfBnEZg/" target="_blank">
-    <img width="650" src="https://images.weserv.nl/?url=i2.hdslb.com/bfs/archive/49eb886eab33d88e1cc88c2d3bd624d7eb703d32.jpg" alt="点击观看演示视频" />
-  </a>
-  <br><br>
-  <a href="https://www.bilibili.com/video/BV1b2rfBnEZg/" target="_blank">
-    <img src="https://img.shields.io/badge/Bilibili-点击上方封面或此处观看完整视频-FF8EB3?style=for-the-badge&logo=bilibili&logoColor=white" alt="Bilibili Video Tutorial"/>
-  </a>
-  <br>
-  <p><b>📺 超详尽保姆级从零操作演示与避坑防潮指南！</b></p>
-</div>
+> **与上游 fork 版的主要区别：**
+> - ❌ **摒弃了 Telegram 通知与控制机器人**（`ecs_bot.py` 已移除）
+> - ✅ 告警/日报改走 **企业微信 Webhook / Gotify / Bark** 三个轻量渠道
+> - 🔧 **修正了国际站账单查询**：`DescribeInstanceBill` 之前因硬编码国内站域名而报 400，现已改为按账号站点的域名 + region 匹配查询
 
 ---
 
 ## ✨ 核心特性
 
-- 🌍 **双轨支持**：完美支持中国内地账单系统（￥）与国际账单系统（$）。
-- 🛡️ **流量熔断**：每分钟检测 CDT 使用量，超过阈值立即关机止损。
-- 💵 **底层双端兼容**：绕过 API 限制，动态适配业务节点读取当月实时账单余额。
-- 🚀 **防黑洞卡死机制**：内置 SNI 与 IPv6 黑洞自动绕过补丁，保障常驻任务在高延迟或 Python 3.12+ 环境下稳定运行。
-- 🔄 **自动恢复**：次月流量重置后自动开机恢复业务。
-- 📊 **多账号多地域**：同时监控任意组合（不同账号、不同区域、不同内外版实例）。
-- 📩 **Telegram 通知**：异常监控告警 + 每日图文并茂的汇总日报。
-- 💳 **余额显示**：每日日报、监控告警与机器人状态查询同步展示账户可用余额，欠费风险一目了然。
-- 🤖 **可选 Telegram 控制机器人**：通过管理员白名单远程查询状态、开机、关机、重启和设置定时开关机。
-
----
-
-## ⭐ 运行截图
-
-<div align="center">
-  <img src="https://github.com/user-attachments/assets/381e346d-604b-47c7-9970-e4e29c87bfb0" width="320" alt="运行截图" />
-  <br>
-  <p><i>运行效果预览</i></p>
-</div>
+- 🌍 **双轨支持**：国内站（¥，`business.aliyuncs.com`）与国际站（$，`business.ap-southeast-1.aliyuncs.com`）均可，且每个账号可单独选择站别。
+- 🛡️ **流量熔断**：每 5 分钟检测 CDT 流量，超过阈值立即关机止损。
+- 💵 **按实例账单**：日报展示每个实例的当月账单（`DescribeInstanceBill`）与账户可用余额（`QueryAccountBalance`）。
+- 🔄 **自动恢复**：次月流量重置后自动开机恢复业务；启动失败自动退避重试。
+- 📊 **多账号多地域**：同时监控任意组合（不同账号、不同区域、国内/国际混合）。
+- 📩 **多端通知**：企业微信 / Gotify / Bark 三个渠道，任一成功即计为已通知（带冷却防刷）。
+- 🔒 **仅读即够**：查流量用 `AliyunCDTReadOnlyAccess` 即可，无需写权限。
 
 ---
 
 ## 🛠️ 前置准备
 
-### 1️⃣ Telegram 通知参数
-- 创建机器人并获取 Token：[@BotFather](https://t.me/BotFather)
-- 获取您接收消息的 Chat ID：[@userinfobot](https://t.me/userinfobot)
-- 如需启用控制机器人，还需要获取允许操作 ECS 的 Telegram 用户 ID。注意：用户 ID 不等于群组 Chat ID。
+### 1️⃣ 告警/日报通知渠道（三选一即可，可留空仅记日志）
+- **企业微信机器人 Webhook URL**（群机器人地址，支持 text 类型）
+- **Gotify**：服务地址 URL + 应用 Token
+- **Bark**：推送地址（`https://api.day.app/设备Key` 或自建 Bark 服务地址 / 设备 Key）
 
 ### 2️⃣ 阿里云 RAM 权限设置
-为了安全起见，**强烈建议不要使用主账号**。请前往阿里云 RAM 访问控制台创建子用户并授予系统权限：
-- 🇨🇳 **国内版 RAM 权限设置入口**：👉 [点击进入阿里云国内站 RAM 控制台](https://ram.console.aliyun.com/users)
-- 🌐 **国际版 RAM 权限设置入口**：�� [点击进入阿里云国际站 RAM 控制台](https://ram.console.alibabacloud.com/users)
+**强烈建议不要使用主账号**，创建 RAM 子用户并授予以下策略：
 
-需要授予的安全权限：
-- `AliyunECSFullAccess`（含开关机与查询权限）
-- `AliyunCDTReadOnlyAccess` 或 `AliyunCDTFullAccess`（查询流量）
-- `AliyunBSSReadOnlyAccess`（查询财务、账单与账户余额模块）
+| 权限策略 | 用途 |
+|----------|------|
+| `AliyunCDTReadOnlyAccess` | 查询 CDT 流量（`ListCdtInternetTraffic`）—— 只读即可 |
+| `AliyunBSSReadOnlyAccess` | 查询账单与账户余额（`DescribeInstanceBill` / `QueryBillOverview` / `QueryAccountBalance`） |
+| `AliyunECSFullAccess` | 查询实例状态 + **自动开关机**（`DescribeInstances` / `StartInstance` / `StopInstance`）|
 
-*(若需要了解详细的创建与使用流程，请查阅本项目内的 [实例开通指南](实例开通.md))*
+> ⚠️ 自动止损依赖 ECS 的**开关机写权限**，因此需要 `AliyunECSFullAccess`；查询流量只需 `AliyunCDTReadOnlyAccess`，`FullAccess` 非必需。
 
----
-
-## （一） Alpine Linux（VNC）初始化（可选，针对底层系统玩家）
-
-> ⚠️ **如果您是普通的 Linux (如 Ubuntu/Debian) 用户，请直接跳过本节至 "(三) 一键安装"，本节仅适用于脱水版 Alpine 系统。**
-
-1. 登录阿里云实例的 **VNC 控制台**
-2. 复制本项目中 `vnc.sh` 的全量内容。您可以直接一键复制执行以下命令来获取：
-前往 GitHub 仓库直接打开 [vnc.sh](https://raw.githubusercontent.com/10000ge10000/aliyun_monitor/main/vnc.sh) 复制源码全文
-3. 将代码 **完整粘贴到 VNC 界面并回车执行**。
-4. 初始完毕后即可按以下默认信息 SSH 远程登录：
-   - **用户名**：`root`
-   - **初始化密码**：`yiwan123`
-
-## （二） Alpine 修复 GRUB 引导并重装 Debian 13 (可选扩展)
-
-> 适用于 **系统无法启动 / GRUB 损坏 / Debian 无法进入** 等进阶场景。通过 **Alpine Linux + chroot** 的方式修复引导并重装 Debian 13。
-
-使用 **root 用户** 登录 Alpine 后，下载并执行脚本：
-```bash
-wget -qO- https://raw.githubusercontent.com/10000ge10000/aliyun_monitor/main/install2.sh | sh
-```
+### 3️⃣ 需获取的信息
+- **AccessKey ID / Secret**（RAM 用户）
+- **ECS 实例 ID**（以 `i-` 开头）
+- **实例所在地域**（cn-hongkong / ap-southeast-1 / ap-northeast-1 …）
+- 账号站别（国内站选 `1`，国际站选 `2`）
+- 关机阈值（默认 180 GB）、流量配额 quota（默认 200 GB）
 
 ---
 
-## （三） 一键安装与配置监控 (所有适用者推荐)
+## 🚀 一键安装与配置
 
-使用 **root 用户** 在任意连通互联网的 Linux 服务器或所监控的 ECS 本机上执行：
+使用 **root 用户** 在连通互联网的 Linux 服务器上执行（请用 `bash` 运行，不要用 `| sh`）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/10000ge10000/aliyun_monitor/main/install.sh | sh
+cd /root
+wget -qO install.sh https://raw.githubusercontent.com/8220xsk/aliyun_monitor/refs/heads/main/install.sh
+bash install.sh
 ```
 
-脚本将提供丝滑的交互式配置，自动：
-* 检测并修齐 Python 运行微环境与 Pip 依赖。
-* 拉取已深度解除底层网关 Bug 的执行组件。
-* 引导您录入 Telegram 配置、选择站别类型（人民币或美元账单）、输入并配置多个待监控账号。
-* 可选启用 Telegram 控制机器人，并配置允许远程操作 ECS 的管理员用户 ID。
-* 设置系统计划任务（Cron），按 **5分钟/次** 及每天早 9 点执行巡检与汇报。
+> ⚠️ **不要用 `wget -qO- … | sh` / `| bash`**：
+> 1. 脚本是 bash 语法，`sh`（dash）会报 `Syntax error: "(" unexpected`。
+> 2. 管道方式会让脚本内容占用 stdin，安装过程中的交互输入会读不到。
 
-> 提示：如果日后需要增加、删除机器或刷新底层组件配置，只需再次运行该脚本命令即可进入智能管理面板。
+安装流程会自动：
+- 安装系统依赖 + 创建 Python 虚拟环境并安装依赖库
+- 拉取 `src/monitor.py`、`src/report.py`
+- 引导录入通知渠道、逐账号配置（站别 / AK / SK / 地域 / 实例 / 阈值）
+- 生成竖排格式的 `config.json`
+- 写入 Cron：**每 5 分钟**巡检、**每天 9 点**发日报
 
-> 提示：国内站（CNY 结算）账号的扣费预警阈值默认按 1 USD ≈ 7.0 CNY 折算，如需自定义汇率，可在 `config.json` 对应实例配置中添加 `"usd_cny_rate": 7.2` 字段。
+### 安装目录与文件
+```
+/opt/scripts/aliyun_monitor/
+├── config.json                 # 配置文件（AK/SK/Webhook Token，权限 600）
+├── monitor.py                  # 流量监控 & 自动止损
+├── report.py                   # 每日财报
+├── monitor_state.json          # 通知冷却 / 启动失败计数缓存
+├── monitor.lock                # 并发运行锁
+├── venv/                       # Python 虚拟环境
+└── log/
+    ├── monitor/                # monitor.py 日志（按天轮转）+ cron.log
+    └── report/                 # report.py 日志（按天轮转）+ cron.log
+```
 
 ---
 
-## 🤖 Telegram 控制机器人（可选）
+## ⚙️ 配置文件格式（`/opt/scripts/aliyun_monitor/config.json`）
 
-安装脚本默认不会启用控制机器人。只有在首次安装或管理菜单中明确选择启用后，才会创建 `aliyun-ecs-bot.service`。
-
-启用后支持以下命令：
-
-```text
-/menu                     打开交互菜单
-/list                     查看实例列表
-/status <实例名或ID>       查询实例状态
-/start_instance <实例名或ID> 开机
-/stop <实例名或ID>         关机，需确认
-/reboot <实例名或ID>       重启，需确认
-/timers                   查看定时任务
-/help                     查看帮助
+```json
+{
+    "bark": { "bark_url": "" },
+    "gotify": { "url": "", "token": "" },
+    "wework": { "webhook_url": "" },
+    "users": [
+        {
+            "name": "🇭🇰香港01",
+            "ak": "LTAI...",
+            "sk": "...",
+            "region": "cn-hongkong",
+            "instance_id": "i-xxx",
+            "traffic_limit": 180,
+            "quota": 200,
+            "bill_endpoint": "business.ap-southeast-1.aliyuncs.com",
+            "currency": "$",
+            "paused": false
+        }
+    ]
+}
 ```
 
-管理服务：
+- `bill_endpoint` + `currency` 决定站别：国内站 → `business.aliyuncs.com` / `¥`；国际站 → `business.ap-southeast-1.aliyuncs.com` / `$`。
+- 每个账号可独立设置站别，支持国内/国际账号混用。
+- 账单查询会**按站别自动匹配 region**（国内→`cn-hangzhou`，国际→对应 region），避免“caller site / regionId 不匹配”的 400 报错。
 
+---
+
+## 🎛️ 管理面板
+
+再次运行 `bash install.sh`，检测到 `config.json` 后进入管理菜单：
+
+```
+1) 添加新的监控实例 (Add)
+2) 删除已有监控实例 (Delete)
+3) 暂停/恢复监控实例 (Pause/Resume)
+4) 更新脚本并重置所有配置 (Update & Reset)
+5) 退出脚本 (Exit)
+```
+
+> 选 **4** 才会重新拉取脚本并覆盖 `config.json`；平时加/删/暂停实例都走 1/2/3，不触碰其它配置。
+
+### 手动测试日报
 ```bash
-systemctl status aliyun-ecs-bot.service
-systemctl restart aliyun-ecs-bot.service
-systemctl stop aliyun-ecs-bot.service
+/opt/scripts/aliyun_monitor/venv/bin/python /opt/scripts/aliyun_monitor/report.py
 ```
 
-也可以重新运行安装脚本进入管理菜单，选择 **Telegram 控制机器人管理**，进行启用、停用、查看状态或修改管理员 ID。
-
-> 注意：控制机器人具备远程开机、关机、重启 ECS 的能力。请务必使用 RAM 子账号和最小必要权限，并只把可信 Telegram 用户 ID 写入 `admin_users`。
+### 查看监控日志
+```bash
+tail -f /opt/scripts/aliyun_monitor/log/monitor/monitor.log
+tail -f /opt/scripts/aliyun_monitor/log/report/report.log
+```
 
 ---
 
-## ⏸️ 暂停/恢复某台机器的监控
+## 📄 日报内容示例
 
-当某台机器处于特殊状态（例如安全锁定、维护或暂不希望自动开机/关机）时，可以临时暂停监控：
+```
+📅 日期: 2026-09-17
 
-1. 重新运行安装脚本进入管理面板。
-2. 选择 **“暂停/恢复监控实例 (Pause/Resume)”**。
-3. 选择目标机器（如 `HK-02`）即可切换暂停/恢复状态。
-
-暂停后：
-- `monitor.py` 将跳过该机器的巡检与自动开关机。
-- `report.py` 会在日报里标注“监控已暂停”。
+👤 *🇭🇰香港01* (2C0.5G)
+   🖥️ 状态: 🟢 Running
+   🌐 IP: `47.*.*.*`
+   📉 流量: 114.51 GB (57.3%)
+   💰 账单: *$0.35*
+   💳 余额: *$0.00*
+   📝 评价: ✅
+```
 
 ---
 
 ## 🗑️ 卸载
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/10000ge10000/aliyun_monitor/main/uninstall.sh | sh
+cd /root
+wget -qO uninstall.sh https://raw.githubusercontent.com/8220xsk/aliyun_monitor/refs/heads/main/uninstall.sh
+bash uninstall.sh
 ```
+
+卸载脚本只删除 `/opt/scripts/aliyun_monitor` 目录（不会误删 `/opt/scripts` 下其它内容）、清理 Cron 任务。
 
 ---
 
 ## ⚠️ 免责声明
 
 1. 本项目仅供学习与技术交流使用。
-2. 虽然我们尽力适配和兜底了绝大部分的系统、网络、API 阻断与连接层 BUG，但**作者不对因脚本异常、API 变更、依赖挂除或配置错误导致的任何流量流失及费用直接负责。**
-3. **强烈建议同时在阿里云费用中心后台设置「预算告警 / 垫底限额」作为最后的防线。**
-
----
-
-## 🙏 致谢
-
-感谢 [@alatter](https://github.com/alatter) 在 [PR #6](https://github.com/10000ge10000/aliyun_monitor/pull/6) 中提供 Telegram ECS 控制机器人思路与原型，实现方向包括实例状态查询、远程开关机/重启、定时任务和机器人交互菜单。本项目已在当前 `src/` 结构中选择性吸收并完善相关能力。
-
----
-
-## ⭐ 欢迎 Star 支持
-
-如果这个项目帮您梳理了多节点的部署或者成功避免了一次“破产”，欢迎点个 ⭐！你的支持是我们持续维护的动力 🙏
+2. 作者不对因脚本异常、API 变更、依赖故障或配置错误导致的流量流失及费用损失直接负责。
+3. **强烈建议同时在阿里云费用中心设置「预算告警 / 垫底限额」作为最后防线。**
